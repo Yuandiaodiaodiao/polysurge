@@ -14,13 +14,41 @@ import os
 import time
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
+from collections import OrderedDict
 
 PORT = 8080
 API_BASE = "https://data-api.polymarket.com"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 
-# 缓存字典: {url: (data, expire_timestamp)}
-cache = {}
+# LRU 缓存配置
+MAX_CACHE_SIZE = 1000  # 最多缓存 1000 个请求
+
+class LRUCache:
+    def __init__(self, max_size):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        # 移到末尾表示最近使用
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def put(self, key, value):
+        if key in self.cache:
+            # 更新并移到末尾
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        # 超过最大容量,删除最久未使用的
+        if len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)
+
+    def __contains__(self, key):
+        return key in self.cache
+
+# 缓存实例: {url: (data, expire_timestamp)}
+cache = LRUCache(MAX_CACHE_SIZE)
 
 
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
@@ -52,8 +80,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         expire_time = ((int(now) // 30) + 1) * 30
 
         # 检查缓存
-        if url in cache:
-            cached_data, cached_expire = cache[url]
+        cached = cache.get(url)
+        if cached:
+            cached_data, cached_expire = cached
             if time.time() < cached_expire:
                 # 缓存有效，直接返回
                 self.send_response(200)
@@ -73,7 +102,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 data = response.read()
 
                 # 存入缓存
-                cache[url] = (data, expire_time)
+                cache.put(url, (data, expire_time))
 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
