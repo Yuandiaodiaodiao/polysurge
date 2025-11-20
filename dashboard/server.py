@@ -11,11 +11,16 @@ import urllib.request
 import urllib.error
 import json
 import os
+import time
 from urllib.parse import urlparse, parse_qs
+from datetime import datetime
 
 PORT = 8080
 API_BASE = "https://data-api.polymarket.com"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
+
+# 缓存字典: {url: (data, expire_timestamp)}
+cache = {}
 
 
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):
@@ -42,6 +47,24 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         if query:
             url += f"?{query}"
 
+        # 计算当前 UTC 时间对齐到 30 秒的过期时间
+        now = time.time()
+        expire_time = ((int(now) // 30) + 1) * 30
+
+        # 检查缓存
+        if url in cache:
+            cached_data, cached_expire = cache[url]
+            if time.time() < cached_expire:
+                # 缓存有效，直接返回
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('X-Cache', 'HIT')
+                self.end_headers()
+                self.wfile.write(cached_data)
+                return
+
+        # 缓存未命中或已过期，请求 API
         try:
             req = urllib.request.Request(url)
             req.add_header('User-Agent', 'PolySurge/1.0')
@@ -49,9 +72,13 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=30) as response:
                 data = response.read()
 
+                # 存入缓存
+                cache[url] = (data, expire_time)
+
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('X-Cache', 'MISS')
                 self.end_headers()
                 self.wfile.write(data)
 
